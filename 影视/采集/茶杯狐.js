@@ -1,28 +1,27 @@
 // @name 茶杯狐
 // @author 梦
-// @description 影视站：支持首页、分类、详情、刮削、弹幕、播放记录与播放；搜索受站点人机验证影响，失败时安全降级
+// @description 影视站：支持首页、分类、详情、刮削、弹幕、播放记录与播放；站点已迁移至 cupfox.in，播放走 /tea 接口直出直链，搜索为站内简单搜索
 // @dependencies cheerio
-// @version 1.1.1
+// @version 1.2.0
 // @downloadURL https://gh-proxy.org/https://github.com/Silent1566/OmniBox-Spider/raw/refs/heads/main/影视/采集/茶杯狐.js
 
 const OmniBox = require("omnibox_sdk");
 const runner = require("spider_runner");
 const cheerio = require("cheerio");
-const crypto = require("crypto");
 const https = require("https");
 const http = require("http");
 
-const BASE_URL = "https://www.cupfox.ai";
+const BASE_URL = "https://www.cupfox.in";
 const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3.1 Mobile/15E148 Safari/604.1";
 const LIST_CACHE_TTL = Number(process.env.CUPFOX_LIST_CACHE_TTL || 900);
 const DETAIL_CACHE_TTL = Number(process.env.CUPFOX_DETAIL_CACHE_TTL || 1800);
 const SEARCH_CACHE_TTL = Number(process.env.CUPFOX_SEARCH_CACHE_TTL || 600);
 
 const CATEGORY_CONFIG = [
-  { id: "1", name: "电影" },
-  { id: "2", name: "剧集" },
-  { id: "3", name: "综艺" },
-  { id: "4", name: "动漫" },
+  { id: "movie", name: "电影" },
+  { id: "tv", name: "剧集" },
+  { id: "show", name: "综艺" },
+  { id: "anime", name: "动漫" },
 ];
 
 module.exports = { home, category, detail, search, play };
@@ -103,100 +102,6 @@ async function requestTextNative(url, options = {}) {
   });
 }
 
-function createCookieJar() {
-  return {};
-}
-
-function mergeSetCookie(cookieJar, setCookieHeaders = []) {
-  const values = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
-  for (const item of values) {
-    const raw = String(item || "");
-    const first = raw.split(";")[0];
-    const idx = first.indexOf("=");
-    if (idx <= 0) continue;
-    const name = first.slice(0, idx).trim();
-    const value = first.slice(idx + 1).trim();
-    if (!name) continue;
-    cookieJar[name] = value;
-  }
-}
-
-function cookieHeader(cookieJar) {
-  return Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join("; ");
-}
-
-function cupfoxFirewallEncrypt(input) {
-  const staticchars = "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";
-  let encodechars = "";
-  const text = String(input || "");
-  for (let i = 0; i < text.length; i += 1) {
-    const current = text[i];
-    const num0 = staticchars.indexOf(current);
-    const code = num0 === -1 ? current : staticchars[(num0 + 3) % 62];
-    const num1 = Math.floor(Math.random() * 62);
-    const num2 = Math.floor(Math.random() * 62);
-    encodechars += staticchars[num1] + code + staticchars[num2];
-  }
-  return Buffer.from(encodechars, "utf8").toString("base64");
-}
-
-function extractFirewallToken(htmlText) {
-  const html = String(htmlText || "");
-  const match = html.match(/var\s+token\s*=\s*encrypt\("([^"]+)"\)/i);
-  return match?.[1] || "";
-}
-
-async function requestTextWithFirewall(url, options = {}) {
-  const cookieJar = createCookieJar();
-  const mergedHeaders = {
-    "User-Agent": UA,
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    Referer: BASE_URL + "/",
-    ...(options.headers || {}),
-  };
-
-  const first = await requestTextNative(url, {
-    ...options,
-    headers: mergedHeaders,
-  });
-  mergeSetCookie(cookieJar, first.headers?.["set-cookie"] || []);
-  if (!/人机验证|verifyBox/.test(first.body || "")) {
-    return first.body;
-  }
-
-  const tokenRaw = extractFirewallToken(first.body);
-  if (!tokenRaw) {
-    await OmniBox.log("warn", `[茶杯狐][firewall] 验证页缺少 token url=${url}`);
-    return first.body;
-  }
-
-  const value = cupfoxFirewallEncrypt(url);
-  const token = cupfoxFirewallEncrypt(tokenRaw);
-  const verifyBody = `value=${encodeURIComponent(value)}&token=${encodeURIComponent(token)}`;
-  const cookie = cookieHeader(cookieJar);
-  await OmniBox.log("info", `[茶杯狐][firewall] solve url=${url} token=${tokenRaw}`);
-  const verifyRes = await requestTextNative(`${BASE_URL}/robot.php`, {
-    method: "POST",
-    headers: {
-      Referer: url,
-      Origin: BASE_URL,
-      "Content-Type": "application/x-www-form-urlencoded",
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-    body: verifyBody,
-  });
-  mergeSetCookie(cookieJar, verifyRes.headers?.["set-cookie"] || []);
-  const solvedCookie = cookieHeader(cookieJar);
-  const second = await requestTextNative(url, {
-    ...options,
-    headers: {
-      ...mergedHeaders,
-      ...(solvedCookie ? { Cookie: solvedCookie } : {}),
-    },
-  });
-  return second.body;
-}
-
 async function getCachedText(cacheKey, ttl, producer, shouldCache = null) {
   try {
     const cached = await OmniBox.getCache(cacheKey);
@@ -272,7 +177,7 @@ function categoryNameById(categoryId) {
 
 function buildScrapeResourceId(detailUrl) {
   const raw = String(detailUrl || "").trim();
-  const match = raw.match(/\/video\/(\d+)\.html/i);
+  const match = raw.match(/\/vod-detail\/(\d+)\.html/i);
   return String(match?.[1] || raw);
 }
 
@@ -345,101 +250,6 @@ function buildHistoryEpisode(playId, episodeNumber, episodeName) {
   return playId || "";
 }
 
-function base64Decode(str) {
-  const safe = String(str || "").replace(/[\r\n\s]/g, "");
-  if (!safe) return "";
-  try {
-    return Buffer.from(safe, "base64").toString("utf-8");
-  } catch (_) {
-    return "";
-  }
-}
-
-function md5Hex(input) {
-  return crypto.createHash("md5").update(String(input || "")).digest("hex");
-}
-
-const Decode1 = {
-  sign(encodedStr) {
-    try {
-      const decodedRaw = this.customStrDecode(encodedStr);
-      const parts = decodedRaw.split("/");
-      if (parts.length < 3) return "";
-      const mapStrB = parts[0];
-      const mapStrA = parts[1];
-      const path = parts.slice(2).join("/");
-      const cipherMap = JSON.parse(base64Decode(mapStrA));
-      const plainMap = JSON.parse(base64Decode(mapStrB));
-      const decodedPath = base64Decode(path);
-      return this.deString(cipherMap, plainMap, decodedPath);
-    } catch (_) {
-      return "";
-    }
-  },
-  customStrDecode(str) {
-    const firstDecode = base64Decode(str);
-    const key = md5Hex("test");
-    const len = key.length;
-    let code = "";
-    for (let i = 0; i < firstDecode.length; i += 1) {
-      const k = i % len;
-      code += String.fromCharCode(firstDecode.charCodeAt(i) ^ key.charCodeAt(k));
-    }
-    return base64Decode(code);
-  },
-  deString(cipherList, plainList, text) {
-    let result = "";
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
-      const isAlpha = /^[a-zA-Z]+$/.test(char);
-      if (isAlpha && Array.isArray(plainList) && plainList.includes(char)) {
-        const index = Array.isArray(cipherList) ? cipherList.indexOf(char) : -1;
-        result += index !== -1 && plainList[index] ? plainList[index] : char;
-      } else {
-        result += char;
-      }
-    }
-    return result;
-  },
-};
-
-function decode2(encoded) {
-  if (!encoded) return "";
-  const dictStr = "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";
-  const dictLen = dictStr.length;
-  const lookup = {};
-  for (let i = 0; i < dictLen; i += 1) {
-    lookup[dictStr[i]] = dictStr[(i + 59) % dictLen];
-  }
-  const raw = base64Decode(encoded);
-  let res = "";
-  for (let i = 1; i < raw.length; i += 3) {
-    const char = raw[i];
-    res += lookup[char] || char;
-  }
-  return res;
-}
-
-function extractPlayerData(htmlText) {
-  const html = String(htmlText || "");
-  const match = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/i);
-  if (!match || !match[1]) return null;
-  try {
-    return JSON.parse(match[1]);
-  } catch (_) {
-    return null;
-  }
-}
-
-function decodeCupfoxPlayUrl(apiData = {}) {
-  const encryptedUrl = String(apiData.url || "");
-  const urlMode = Number(apiData.urlmode || 0);
-  if (!encryptedUrl) return "";
-  if (urlMode === 1) return Decode1.sign(encryptedUrl) || "";
-  if (urlMode === 2) return decode2(encryptedUrl) || "";
-  return encryptedUrl;
-}
-
 function isCupfoxPlaceholderUrl(url) {
   const value = String(url || "").trim();
   if (!value) return true;
@@ -454,8 +264,11 @@ function mapVideoCard($, el) {
   const node = $(el);
   const href = node.find("a[href]").first().attr("href") || "";
   const title = decodeMaybeGarbled(normalizeText(node.find(".movie-title").first().text() || node.attr("title") || node.text()));
-  const pic = node.find(".movie-post-lazyload").first().attr("data-original") || node.find("img").first().attr("src") || "";
-  const year = decodeMaybeGarbled(normalizeText(node.find(".movie-item-score").first().text()));
+  const pic = node.find("img.movie-post").first().attr("src")
+    || node.find(".movie-post-lazyload").first().attr("data-original")
+    || node.find("img").first().attr("src")
+    || "";
+  const year = decodeMaybeGarbled(normalizeText(node.find(".movie-rating").first().text()));
   const remarks = decodeMaybeGarbled(normalizeText(node.find(".movie-item-note").first().text()));
   return {
     vod_id: absoluteUrl(href),
@@ -480,95 +293,78 @@ function parseHomeList(htmlText) {
   return list;
 }
 
-function parseSearchList(htmlText) {
-  const $ = cheerio.load(htmlText);
-  const list = [];
-  const seen = new Set();
-  $(".vod-search-list .box").each((_, el) => {
-    const item = $(el);
-    const link = item.find("a.cover-link").first();
-    const href = link.attr("href") || "";
-    const name = decodeMaybeGarbled(normalizeText(item.find(".movie-title").first().text()));
-    const pic = item.find(".Lazy").first().attr("data-original") || item.find("img").first().attr("src") || "";
-    const remarks = decodeMaybeGarbled(normalizeText(item.find(".movie-item-note").first().text() || item.find(".meta.getop").first().text()));
-    const vodId = absoluteUrl(href);
-    if (!vodId || !name || seen.has(vodId)) return;
-    seen.add(vodId);
-    list.push({
-      vod_id: vodId,
-      vod_name: name,
-      vod_pic: absoluteUrl(pic),
-      vod_remarks: remarks,
-    });
-  });
-  return list;
-}
+const DETAIL_INFO_KEYS = ["主演", "导演", "别名", "首播", "热度", "简介"];
 
 function parseDetail(htmlText, detailUrl) {
   const $ = cheerio.load(htmlText);
-  const title = cleanDisplayText($("h1.movie-title").first().text());
-  const pic = absoluteUrl($(".poster img").first().attr("src") || "");
-  const content = cleanDisplayText($(".summary.detailsTxt").first().html() || $(".summary.detailsTxt").first().text());
-  const typeTags = $(".scroll-content a").toArray().map((el) => cleanDisplayText($(el).text())).filter(Boolean);
+  const resourceId = buildScrapeResourceId(detailUrl);
+  let title = cleanDisplayText($(".movie-list-title").first().text());
+  if (!title) {
+    title = cleanDisplayText(String($("title").first().text() || "").replace(/在线观看.*$/, "").replace(/- 茶杯狐.*$/, ""));
+  }
+  const pic = absoluteUrl($(".a5-img").first().attr("src") || (resourceId ? `/uimg/${resourceId}.jpg` : ""));
+
   const infoData = {};
-  $(".info-data").each((_, el) => {
-    const text = cleanDisplayText($(el).html() || $(el).text());
-    const match = text.match(/^([^：:]+)[：:]\s*(.*)$/);
-    if (match) infoData[match[1].trim()] = cleanDisplayText(match[2]);
+  const typeTags = [];
+  const subjects = $(".movie-list-subject").toArray();
+  for (const el of subjects) {
+    const text = cleanDisplayText($(el).text());
+    if (!text) continue;
+    const match = text.match(/^(主演|导演|别名|首播|热度|简介)\s*[:：]\s*([\s\S]*)$/);
+    if (match) {
+      infoData[match[1]] = cleanDisplayText(match[2]);
+      continue;
+    }
+    if (/^评分/.test(text)) continue;
+    if (text === "在线播放" || text === "播放线路" || text.length > 10) continue;
+    if ($(el).hasClass("play-btn") || $(el).hasClass("pbtn")) continue;
+    typeTags.push(text);
+  }
+
+  const content = infoData["简介"] || cleanDisplayText($('meta[name="description"]').first().attr("content") || "");
+
+  const episodes = [];
+  $("span.play-btn").each((epIdx, el) => {
+    const name = cleanDisplayText($(el).text()) || `第${epIdx + 1}集`;
+    const slug = normalizeText($(el).attr("ep_slug") || "");
+    if (!slug) return;
+    const fid = `${resourceId}#${slug}`;
+    const meta = {
+      sid: detailUrl,
+      fid,
+      v: title || "",
+      e: name,
+      t: "在线播放",
+      i: epIdx,
+    };
+    episodes.push({
+      name,
+      playId: `${detailUrl}|||${encodeMeta(meta)}`,
+      _fid: fid,
+      _rawName: name,
+    });
   });
 
-  const tabs = [];
-  $(".play_source_tab .titleName").each((_, el) => {
-    const name = cleanDisplayText($(el).contents().first().text() || $(el).text()).replace(/\s+/g, " ").trim();
-    tabs.push(name || `线路${tabs.length + 1}`);
-  });
+  const playSources = episodes.length ? [{ name: "在线播放", episodes }] : [];
+  const normalizedPlaySources = playSources.map((source) => ({
+    name: source.name,
+    episodes: (source.episodes || []).map((ep) => ({ name: ep.name, playId: ep.playId })),
+  }));
 
-      const playSources = [];
-      $("#tagContent .play_list_box").each((idx, box) => {
-        const tabName = tabs[idx] || `线路${idx + 1}`;
-        const episodes = [];
-        $(box).find("a.btn[href]").each((epIdx, a) => {
-          const href = $(a).attr("href") || "";
-          const name = cleanDisplayText($(a).text()) || `第${epIdx + 1}集`;
-          if (!href) return;
-          const fid = `${detailUrl}#${tabName}#${epIdx}`;
-          const meta = {
-            sid: detailUrl,
-            fid,
-            v: title || "",
-            e: name,
-            t: tabName,
-            i: epIdx,
-          };
-          episodes.push({
-            name,
-            playId: `${absoluteUrl(href)}|||${encodeMeta(meta)}`,
-            _fid: fid,
-            _rawName: name,
-          });
-        });
-        if (episodes.length) playSources.push({ name: tabName, episodes });
-      });
-
-      const normalizedPlaySources = playSources.map((source) => ({
-        name: source.name,
-        episodes: (source.episodes || []).map((ep) => ({ name: ep.name, playId: ep.playId })),
-      }));
-
-      return {
-        list: [{
-          vod_id: detailUrl,
-          vod_name: title,
-          vod_pic: pic,
-          type_name: typeTags.join(" / "),
-          vod_remarks: cleanDisplayText(infoData["状态"] || ""),
-          vod_actor: formatPeopleText(infoData["演员"] || ""),
-          vod_director: formatPeopleText(infoData["导演"] || ""),
-          vod_content: content,
-          vod_play_sources: normalizedPlaySources,
-        }],
-        _play_sources_for_scrape: playSources,
-      };
+  return {
+    list: [{
+      vod_id: detailUrl,
+      vod_name: title,
+      vod_pic: pic,
+      type_name: typeTags.join(" / "),
+      vod_remarks: cleanDisplayText(infoData["首播"] || ""),
+      vod_actor: formatPeopleText(infoData["主演"] || ""),
+      vod_director: formatPeopleText(infoData["导演"] || ""),
+      vod_content: content,
+      vod_play_sources: normalizedPlaySources,
+    }],
+    _play_sources_for_scrape: playSources,
+  };
 }
 
 async function home() {
@@ -588,11 +384,11 @@ async function home() {
 
 async function category(params = {}) {
   try {
-    const categoryId = String(params.categoryId || params.type_id || params.id || "1");
+    const categoryId = String(params.categoryId || params.type_id || params.id || "movie");
     const page = Math.max(1, Number(params.page) || 1);
     const url = page === 1
-      ? `${BASE_URL}/type/${categoryId}.html`
-      : `${BASE_URL}/type/${categoryId}-${page}.html`;
+      ? `${BASE_URL}/filter/?type=${encodeURIComponent(categoryId)}`
+      : `${BASE_URL}/filter/?type=${encodeURIComponent(categoryId)}&page=${page}`;
     const html = await getCachedText(`cupfox:category:${categoryId}:${page}`, LIST_CACHE_TTL, () => requestText(url));
     const list = parseHomeList(html);
     await OmniBox.log("info", `[茶杯狐][category] category=${categoryId} page=${page} count=${list.length}`);
@@ -694,23 +490,17 @@ async function search(params = {}) {
     const wd = normalizeText(params.wd || params.keyword || params.key || "");
     const page = Math.max(1, Number(params.page) || 1);
     if (!wd) return { list: [] };
-    const searchPath = `/search/${encodeURIComponent(wd)}----------${page}---.html`;
     const html = await getCachedText(
-      `cupfox:search:v2:${wd}:${page}`,
+      `cupfox:search:v3:${wd}:${page}`,
       SEARCH_CACHE_TTL,
-      () => requestTextWithFirewall(BASE_URL + searchPath),
-      (text) => !/人机验证|verifyBox/.test(String(text || "")),
+      () => requestText(`${BASE_URL}/search?q=${encodeURIComponent(wd)}`),
     );
-    if (/人机验证/.test(html) || /verifyBox/.test(html)) {
-      await OmniBox.log("warn", `[茶杯狐][search] 命中人机验证 wd=${wd} page=${page} path=${searchPath}`);
-      return { page, pagecount: page, total: 0, list: [] };
-    }
-    const list = parseSearchList(html);
+    const list = page === 1 ? parseHomeList(html) : [];
     await OmniBox.log("info", `[茶杯狐][search] wd=${wd} page=${page} count=${list.length}`);
     return {
       page,
-      pagecount: list.length ? page + 1 : page,
-      total: page * list.length + (list.length ? 1 : 0),
+      pagecount: page,
+      total: list.length,
       list,
     };
   } catch (e) {
@@ -735,138 +525,71 @@ async function play(params = {}, context = {}) {
       await OmniBox.log("info", `[茶杯狐][play] 解析透传信息 vod=${vodName} episode=${episodeName} fid=${playMeta.fid || ""}`);
     }
 
-    const playId = absoluteUrl(rawPlayId);
-    if (!playId) return { parse: 1, url: "", urls: [], header: {} };
+    const detailPageUrl = absoluteUrl(rawPlayId);
+    if (!detailPageUrl) return { parse: 1, url: "", urls: [], header: {} };
 
-    const pageHeaders = {
-      "User-Agent": UA,
-      Referer: BASE_URL + "/",
-    };
+    const fidParts = String(playMeta?.fid || "").split("#");
+    const videoIdForApi = fidParts[0] || buildScrapeResourceId(detailPageUrl);
+    const epSlug = fidParts[1] || "";
 
     const playInfoPromise = (async () => {
-      const html = await requestText(playId, { headers: pageHeaders });
-      const playerData = extractPlayerData(html);
-      const vid = String(playerData?.url || "").trim();
-      await OmniBox.log(
-        "info",
-        `[茶杯狐][play] player data from=${playerData?.from || ""} server=${playerData?.server || ""} id=${playerData?.id || ""} sid=${playerData?.sid ?? ""} nid=${playerData?.nid ?? ""} encrypt=${playerData?.encrypt ?? ""} trysee=${playerData?.trysee ?? ""} points=${playerData?.points ?? ""} link=${playerData?.link || ""} vid=${vid.slice(0, 120)}`,
-      );
-
-      if (vid) {
-        const muiplayerUrl = `${BASE_URL}/foxplay/muiplayer.php?vid=${encodeURIComponent(vid)}`;
-        const apiBody = new URLSearchParams({ vid }).toString();
-        await OmniBox.log("info", `[茶杯狐][play] foxplay request body=${apiBody}`);
-        const apiRes = await requestTextNative(`${BASE_URL}/foxplay/api.php`, {
-          method: "POST",
-          headers: {
-            "User-Agent": UA,
-            Referer: muiplayerUrl,
-            Origin: BASE_URL,
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            Accept: "*/*",
-          },
-          body: apiBody,
-        });
-
-        const apiRaw = String(apiRes?.body || "");
-        await OmniBox.log("info", `[茶杯狐][play] api raw=${apiRaw.slice(0, 1200)}`);
-
-        let apiJson = null;
+      if (videoIdForApi && epSlug) {
+        const teaUrl = `${BASE_URL}/tea/${videoIdForApi}-${epSlug}`;
         try {
-          apiJson = JSON.parse(apiRaw);
-        } catch (parseError) {
-          await OmniBox.log("warn", `[茶杯狐][play] api json parse failed: ${parseError.message}`);
-        }
-
-        if (apiJson) {
-          await OmniBox.log(
-            "info",
-            `[茶杯狐][play] api parsed code=${apiJson.code} message=${apiJson.message || ""} dataKeys=${Object.keys(apiJson.data || {}).join(",")} unique=${apiJson?.data?.unique || ""} player=${apiJson?.data?.player || ""}`,
-          );
-          if (Number(apiJson.code) === 403 || /vid empty/i.test(String(apiJson.message || ""))) {
-            await OmniBox.log(
-              "warn",
-              `[茶杯狐][play] api rejected request code=${apiJson.code} message=${apiJson.message || ""} unique=${apiJson?.data?.unique || ""} probable_cause=vid_format_or_signature_mismatch`,
-            );
+          const apiRes = await requestTextNative(teaUrl, {
+            headers: {
+              "User-Agent": UA,
+              Referer: detailPageUrl,
+              Accept: "application/json, text/plain, */*",
+              "X-Requested-With": "XMLHttpRequest",
+            },
+          });
+          const apiRaw = String(apiRes?.body || "");
+          let apiJson = null;
+          try {
+            apiJson = JSON.parse(apiRaw);
+          } catch (parseError) {
+            await OmniBox.log("warn", `[茶杯狐][play] tea json parse failed: ${parseError.message} raw=${apiRaw.slice(0, 200)}`);
           }
-        }
 
-        if (apiJson?.data?.url) {
-          const decodedUrl = decodeCupfoxPlayUrl(apiJson.data);
-          await OmniBox.log(
-            "info",
-            `[茶杯狐][play] api decode detail mode=${apiJson.data.urlmode || 0} type=${apiJson.data.type || ""} encrypt=${apiJson.data.encrypt ?? ""} raw=${String(apiJson.data.url || "").slice(0, 300)} decoded=${String(decodedUrl || "").slice(0, 300)}`,
-          );
-          if (decodedUrl && !isCupfoxPlaceholderUrl(decodedUrl)) {
+          const plays = Array.isArray(apiJson?.video_plays) ? apiJson.video_plays : [];
+          const urls = plays
+            .map((item) => ({
+              name: cleanDisplayText(item?.src_site) || "在线播放",
+              url: String(item?.play_data || "").trim(),
+            }))
+            .filter((item) => item.url && !isCupfoxPlaceholderUrl(item.url));
+
+          if (urls.length) {
             const finalHeaders = {
               "User-Agent": UA,
-              Referer: muiplayerUrl,
+              Referer: detailPageUrl,
             };
-            await OmniBox.log("info", `[茶杯狐][play] api decode success code=${apiJson.code} mode=${apiJson.data.urlmode || 0} type=${apiJson.data.type || ""} url=${decodedUrl}`);
+            await OmniBox.log("info", `[茶杯狐][play] tea success lines=${urls.length} url=${urls[0].url}`);
             return {
               parse: 0,
-              url: decodedUrl,
-              urls: [{ name: "播放", url: decodedUrl }],
+              url: urls[0].url,
+              urls,
               header: finalHeaders,
-              headers: finalHeaders};
+              headers: finalHeaders,
+            };
           }
-          await OmniBox.log("warn", `[茶杯狐][play] api decode invalid code=${apiJson.code} mode=${apiJson.data.urlmode || 0} type=${apiJson.data.type || ""} url=${String(decodedUrl || "").slice(0, 200)} raw=${String(apiJson.data.url || "").slice(0, 200)}`);
-        } else {
-          await OmniBox.log("warn", `[茶杯狐][play] api unexpected response=${apiRaw.slice(0, 1200)}`);
+          await OmniBox.log("warn", `[茶杯狐][play] tea returned no direct url raw=${apiRaw.slice(0, 500)}`);
+        } catch (apiError) {
+          await OmniBox.log("warn", `[茶杯狐][play] tea request failed url=${teaUrl}: ${apiError.message}`);
         }
-        await OmniBox.log("warn", `[茶杯狐][play] foxplay api returned no direct url, fallback sniff vid=${vid}`);
       } else {
-        await OmniBox.log("warn", `[茶杯狐][play] 未找到 player_aaaa.url，fallback sniff page`);
+        await OmniBox.log("warn", `[茶杯狐][play] 缺少 fid/ep_slug fid=${playMeta?.fid || ""} videoId=${videoIdForApi}`);
       }
 
-      const sniffTargets = [];
-      if (vid) {
-        sniffTargets.push({
-          name: "muiplayer",
-          url: `${BASE_URL}/foxplay/muiplayer.php?vid=${encodeURIComponent(vid)}`,
-          headers: {
-            "User-Agent": UA,
-            Referer: playId,
-          },
-        });
-      }
-      sniffTargets.push({
-        name: "play-page",
-        url: playId,
-        headers: {
-          "User-Agent": UA,
-          Referer: playId,
-        },
-      });
-
-      for (const target of sniffTargets) {
-        try {
-          await OmniBox.log("info", `[茶杯狐][play] sniff target=${target.name} url=${target.url}`);
-          const sniffed = await OmniBox.sniffVideo(target.url, target.headers);
-          if (sniffed?.url && !isCupfoxPlaceholderUrl(sniffed.url)) {
-            await OmniBox.log("info", `[茶杯狐][play] sniff success target=${target.name} url=${sniffed.url}`);
-            return {
-              parse: 0,
-              url: sniffed.url,
-              urls: [{ name: "播放", url: sniffed.url }],
-              header: sniffed.header || sniffed.headers || target.headers || {},
-              headers: sniffed.header || sniffed.headers || target.headers || {}
-  };
-          }
-          await OmniBox.log("warn", `[茶杯狐][play] sniff empty/invalid target=${target.name} url=${String(sniffed?.url || "")}`);
-        } catch (sniffError) {
-          await OmniBox.log("warn", `[茶杯狐][play] sniff failed target=${target.name}: ${sniffError.message}`);
-        }
-      }
-
-      const fallbackHeaders = { "User-Agent": UA, Referer: playId };
+      const fallbackHeaders = { "User-Agent": UA, Referer: detailPageUrl };
       return {
         parse: 1,
-        url: playId,
-        urls: [{ name: "播放页", url: playId }],
+        url: detailPageUrl,
+        urls: [{ name: "播放页", url: detailPageUrl }],
         header: fallbackHeaders,
-        headers: fallbackHeaders};
+        headers: fallbackHeaders,
+      };
     })();
 
     const metadataPromise = (async () => {
@@ -958,7 +681,7 @@ async function play(params = {}, context = {}) {
         vodId: videoIdForScrape,
         title: scrapeTitle || vodName || playMeta.v || "茶杯狐视频",
         pic: scrapePic || "",
-        episode: buildHistoryEpisode(playId, episodeNumber, episodeName),
+        episode: buildHistoryEpisode(detailPageUrl, episodeNumber, episodeName),
         sourceId: context.sourceId,
         episodeNumber,
         episodeName: episodeName || "",
